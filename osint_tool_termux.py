@@ -1,93 +1,101 @@
 #!/usr/bin/env python3
 import requests
-import subprocess
+import re
+import os
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urljoin
+import sys
 
-def scrape_instagram_profile(username):
-    print(f"[+] Fetching Instagram data for {username}...")
+def save_page_locally(url, save_dir="/data/data/com.termux/files/home/storage/shared/hosts"):
+    print(f"[+] Grabbing the damn page from {url}...")
     try:
-        url = f"https://www.instascraper.org/api/profile/{username}"
-        response = requests.get(url)
-        data = response.json()
-
-        if "username" in data:
-            print(f"Username: {data['username']}")
-            print(f"Full Name: {data.get('full_name', 'Not available')}")
-            print(f"Followers: {data['followers']}")
-            print(f"Following: {data['following']}")
-            print(f"Posts: {data['posts']}")
-            print(f"Bio: {data['biography']}")
-            return data
-        else:
-            print("[-] Failed to retrieve profile data or user not found.")
+        # Create directory if it doesn't exist
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        # Get the page
+        headers = {"User-Agent":"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code!= 200:
+            print(f"[-] Shit, failed to grab {url}. Status code: {response.status_code}")
             return None
-
+        
+        # Parse URL to create a safe filename
+        parsed_url = urlparse(url)
+        filename = f"{parsed_url.netloc.replace('.', '_')}.html"
+        filepath = os.path.join(save_dir, filename)
+        
+        # Save the HTML
+        with open(filepath,"w", encoding="utf-8") as f:
+            f.write(response.text)
+        print(f"[+] Saved the fucking page to {filepath}")
+        
+        return filepath
     except Exception as e:
-        print(f"[-] Error fetching Instagram data: {str(e)}")
+        print(f"[-] Fuck, something broke while grabbing the page: {str(e)}")
         return None
 
-def get_location_from_ip(ip_address):
-    print(f"[+] Getting location for IP: {ip_address}...")
+def extract_hosts_offline(filepath, base_url):
+    print(f"[+] Ripping hosts from {filepath} offline like a badass...")
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip_address}")
-        data = response.json()
-        if data["status"] == "success":
-            print(f"IP: {ip_address}")
-            print(f"City: {data['city']}")
-            print(f"Region: {data['regionName']}")
-            print(f"Country: {data['country']}")
-            print(f"Coordinates: {data['lat']}, {data['lon']}")
-            return data
+        # Read the saved HTML
+        with open(filepath,"r", encoding="utf-8") as f:
+            html_content = f.read()
+        
+        # Parse with BeautifulSoup
+        soup = BeautifulSoup(html_content,"html.parser")
+        hosts = set()
+        
+        # Extract from href attributes
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            parsed_href = urlparse(urljoin(base_url, href))
+            if parsed_href.netloc:
+                hosts.add(parsed_href.netloc)
+        
+        # Extract from src attributes (scripts, images, etc.)
+        for tag in soup.find_all(["script","img","iframe"], src=True):
+            src = tag["src"]
+            parsed_src = urlparse(urljoin(base_url, src))
+            if parsed_src.netloc:
+                hosts.add(parsed_src.netloc)
+        
+        # Regex to catch any sneaky hosts in the raw HTML
+        host_pattern = r"(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,6}|(?:\d{1,3}\.){3}\d{1,3}"
+        raw_hosts = re.findall(host_pattern, html_content)
+        for host in raw_hosts:
+            hosts.add(host)
+        
+        # Filter out bullshit and print the results
+        if hosts:
+            print("[*] Found these juicy hosts:")
+            for host in sorted(hosts):
+                print(f" - {host}")
+            return hosts
         else:
-            print("[-] Failed to get IP location.")
+            print("[-] No fucking hosts found. This site’s dry as hell.")
             return None
     except Exception as e:
-        print(f"[-] Error fetching IP info: {str(e)}")
+        print(f"[-] Shit went wrong while ripping hosts: {str(e)}")
         return None
 
-def scan_network():
-    print("[+] Scanning local network for devices...")
-    try:
-        result = subprocess.check_output(["nmap", "-sn", "192.168.1.0/24"]).decode()
-        print(result)
-        return result
-    except Exception as e:
-        print(f"[-] Network scan failed: {str(e)}")
-        return None
-
-def lookup_phone_number(phone_number):
-    print(f"[+] Looking up phone number: {phone_number}...")
-    try:
-        response = requests.get(f"https://api.numlookupapi.com/v1/validate/{phone_number}?apikey=free")
-        data = response.json()
-        if data.get("valid"):
-            print(f"Phone Number: {phone_number}")
-            print(f"Country: {data['country_name']}")
-            print(f"Carrier: {data['carrier']}")
-            return data
-        else:
-            print("[-] Invalid phone number.")
-            return None
-    except Exception as e:
-        print(f"[-] Error looking up phone number: {str(e)}")
-        return None
-
-def ultimate_osint_tool(target):
-    print(f"[*] Target: {target}")
-
-    if "instagram.com" in target:
-        username = target.strip("/").split("/")[-1]
-        scrape_instagram_profile(username)
-    elif not (target.startswith("+") or target.count(".") == 3):
-        scrape_instagram_profile(target)
-    elif target.startswith("+"):
-        lookup_phone_number(target)
-    elif target.count(".") == 3:
-        get_location_from_ip(target)
-    else:
-        print("[-] Unsupported input. Try a username, phone number, or IP address.")
-
-    scan_network()
+def main():
+    if len(sys.argv) != 2:
+        print("[-] Usage: python host_ripper.py <url>")
+        sys.exit(1)
+    
+    url = sys.argv[1]
+    if not url.startswith(("http://","https://")):
+        url ="https://" + url
+    
+    # Step 1: Download the page
+    saved_file = save_page_locally(url)
+    if not saved_file:
+        print("[-] Can’t proceed without the damn page. Check your URL or connection.")
+        sys.exit(1)
+    
+    # Step 2: Extract hosts offline
+    extract_hosts_offline(saved_file, url)
 
 if __name__ == "__main__":
-    target = input("Enter target (Instagram username, phone number, or IP): ")
-    ultimate_osint_tool(target)
+    main()
